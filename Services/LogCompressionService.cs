@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using LogDeleter.Configuration;
+using LogDeleter.Logging;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -9,13 +10,16 @@ public class LogCompressionService
 {
     private readonly LogDeleterSettings _settings;
     private readonly ILogger<LogCompressionService> _logger;
+    private readonly IActivityLogger _activity;
 
     public LogCompressionService(
         IOptions<LogDeleterSettings> settings,
-        ILogger<LogCompressionService> logger)
+        ILogger<LogCompressionService> logger,
+        IActivityLogger activity)
     {
-        _settings = settings.Value;
-        _logger = logger;
+        _settings  = settings.Value;
+        _logger    = logger;
+        _activity  = activity;
     }
 
     /// <summary>
@@ -24,13 +28,17 @@ public class LogCompressionService
     public void CompressOldLogs()
     {
         var cutoffTime = DateTime.Now.AddHours(-_settings.CompressAfterHours);
+
         _logger.LogInformation("압축 기준 시각: {CutoffTime:yyyy-MM-dd HH:mm:ss}", cutoffTime);
+        _activity.Info($"[압축 시작] 기준 시각: {cutoffTime:yyyy-MM-dd HH:mm:ss} " +
+                       $"(대상 확장자: {string.Join(", ", _settings.LogExtensions)})");
 
         foreach (var folder in _settings.TargetFolders)
         {
             if (!Directory.Exists(folder))
             {
                 _logger.LogWarning("폴더를 찾을 수 없습니다: {Folder}", folder);
+                _activity.Warn($"[압축] 폴더 없음: {folder}");
                 continue;
             }
 
@@ -39,16 +47,15 @@ public class LogCompressionService
             if (_settings.SearchSubDirectories)
             {
                 foreach (var subDir in Directory.GetDirectories(folder, "*", SearchOption.AllDirectories))
-                {
                     CompressFolderLogs(subDir, cutoffTime);
-                }
             }
         }
+
+        _activity.Info("[압축 완료]");
     }
 
     private void CompressFolderLogs(string folderPath, DateTime cutoffTime)
     {
-        // 압축 대상 파일 조회 (하위 폴더 제외 - 이미 재귀 처리됨)
         var logFiles = _settings.LogExtensions
             .SelectMany(ext => Directory.EnumerateFiles(folderPath, $"*{ext}", SearchOption.TopDirectoryOnly))
             .Select(f => new FileInfo(f))
@@ -59,55 +66,58 @@ public class LogCompressionService
             return;
 
         // 파일을 시간(hour) 단위로 그룹화
-        var hourlyGroups = logFiles
-            .GroupBy(f => new DateTime(
-                f.LastWriteTime.Year,
-                f.LastWriteTime.Month,
-                f.LastWriteTime.Day,
-                f.LastWriteTime.Hour,
-                0, 0));
+        var hourlyGroups = logFiles.GroupBy(f => new DateTime(
+            f.LastWriteTime.Year, f.LastWriteTime.Month, f.LastWriteTime.Day,
+            f.LastWriteTime.Hour, 0, 0));
 
         foreach (var group in hourlyGroups)
         {
             var hourLabel = group.Key.ToString("yyyy-MM-dd_HH00");
-            var zipPath = Path.Combine(folderPath, $"{hourLabel}.zip");
+            var zipPath   = Path.Combine(folderPath, $"{hourLabel}.zip");
+            var files     = group.ToList();
 
-            // 이미 해당 시간대 zip이 존재하면 추가하지 않음 (중복 방지)
             if (File.Exists(zipPath))
             {
                 _logger.LogDebug("이미 압축 파일 존재, 건너뜀: {ZipPath}", zipPath);
-                // 이미 zip이 있지만 원본 파일이 남아있는 경우 삭제만 진행
-                DeleteOriginalFiles(group.ToList(), zipPath);
+                _activity.Info($"[압축 건너뜀] 이미 존재: {zipPath}");
+                DeleteOriginalFiles(files, zipPath);
                 continue;
             }
 
-            var files = group.ToList();
-            _logger.LogInformation(
-                "압축 중: {ZipPath} ({Count}개 파일)",
-                zipPath, files.Count);
+            _logger.LogInformation("압축 중: {ZipPath} ({Count}개 파일)", zipPath, files.Count);
 
             try
             {
-                using var zipArchive = ZipFile.Open(zipPath, ZipArchiveMode.Create);
-                foreach (var file in files)
+                long originalBytes = files.Sum(f => f.Length);
+
+                using (var zipArchive = ZipFile.Open(zipPath, ZipArchiveMode.Create))
                 {
-                    zipArchive.CreateEntryFromFile(
-                        file.FullName,
-                        file.Name,
-                        CompressionLevel.Optimal);
+                    foreach (var file in files)
+                    {
+                        zipArchive.CreateEntryFromFile(
+                            file.FullName, file.Name, CompressionLevel.Optimal);
+                    }
                 }
 
-                _logger.LogInformation(
-                    "압축 완료: {ZipPath} ({Count}개 파일)",
-                    zipPath, files.Count);
+                long compressedBytes = new FileInfo(zipPath).Length;
+                double ratio = originalBytes > 0
+                    ? (1.0 - (double)compressedBytes / originalBytes) * 100
+                    : 0;
+
+                _logger.LogInformation("압축 완료: {ZipPath} ({Count}개 파일)", zipPath, files.Count);
+                _activity.Info(
+                    $"[압축 생성] {zipPath} | " +
+                    $"파일 수: {files.Count}개 | " +
+                    $"원본: {FormatBytes(originalBytes)} → 압축: {FormatBytes(compressedBytes)} " +
+                    $"(절감률 {ratio:F1}%)");
 
                 DeleteOriginalFiles(files, zipPath);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "압축 실패: {ZipPath}", zipPath);
+                _activity.Error($"[압축 실패] {zipPath} | {ex.Message}", ex);
 
-                // 실패 시 불완전한 zip 파일 제거
                 if (File.Exists(zipPath))
                 {
                     try { File.Delete(zipPath); }
@@ -119,7 +129,6 @@ public class LogCompressionService
 
     private void DeleteOriginalFiles(List<FileInfo> files, string zipPath)
     {
-        // zip 파일이 정상적으로 생성된 경우에만 원본 삭제
         if (!File.Exists(zipPath))
             return;
 
@@ -129,11 +138,20 @@ public class LogCompressionService
             {
                 file.Delete();
                 _logger.LogDebug("원본 삭제: {File}", file.FullName);
+                _activity.Info($"[원본 삭제] {file.FullName}");
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "원본 파일 삭제 실패: {File}", file.FullName);
+                _activity.Error($"[원본 삭제 실패] {file.FullName} | {ex.Message}");
             }
         }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes >= 1024 * 1024) return $"{bytes / 1024.0 / 1024.0:F2} MB";
+        if (bytes >= 1024)        return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes} B";
     }
 }

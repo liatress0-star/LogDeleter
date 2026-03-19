@@ -1,5 +1,6 @@
 using LogDeleter;
 using LogDeleter.Configuration;
+using LogDeleter.Logging;
 using LogDeleter.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -22,6 +23,9 @@ builder.Services.Configure<EventLogSettings>(settings =>
 // 설정 바인딩
 builder.Services.Configure<LogDeleterSettings>(
     builder.Configuration.GetSection(LogDeleterSettings.SectionName));
+
+// log4net 기반 동작 이력 로거 등록
+builder.Services.AddSingleton<IActivityLogger, Log4NetActivityLogger>();
 
 // 서비스 등록
 builder.Services.AddSingleton<LogCompressionService>();
