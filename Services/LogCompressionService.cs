@@ -27,7 +27,7 @@ namespace LogDeleter.Services
         }
 
         /// <summary>
-        /// 각 대상 폴더에서 CompressAfterHours 이전의 로그 파일을 시간 단위로 묶어 압축합니다.
+        /// RootFolder의 직계 하위 폴더들에서 CompressAfterHours 이전 파일을 시간 단위로 묶어 압축합니다.
         /// </summary>
         public void CompressOldLogs()
         {
@@ -37,15 +37,16 @@ namespace LogDeleter.Services
             _activity.Info($"[압축 시작] 기준 시각: {cutoffTime:yyyy-MM-dd HH:mm:ss} " +
                            $"(대상 확장자: {string.Join(", ", _settings.LogExtensions)})");
 
-            foreach (var folder in _settings.TargetFolders)
+            if (!Directory.Exists(_settings.RootFolder))
             {
-                if (!Directory.Exists(folder))
-                {
-                    _logger.LogWarning("폴더를 찾을 수 없습니다: {Folder}", folder);
-                    _activity.Warn($"[압축] 폴더 없음: {folder}");
-                    continue;
-                }
+                _logger.LogWarning("루트 폴더를 찾을 수 없습니다: {RootFolder}", _settings.RootFolder);
+                _activity.Warn($"[압축] 루트 폴더 없음: {_settings.RootFolder}");
+                return;
+            }
 
+            // RootFolder의 직계 하위 폴더 목록을 대상으로 처리
+            foreach (var folder in Directory.GetDirectories(_settings.RootFolder, "*", SearchOption.TopDirectoryOnly))
+            {
                 CompressFolderLogs(folder, cutoffTime);
 
                 if (_settings.SearchSubDirectories)

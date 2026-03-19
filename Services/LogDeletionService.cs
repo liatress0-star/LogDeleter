@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using LogDeleter.Configuration;
@@ -26,7 +25,7 @@ namespace LogDeleter.Services
         }
 
         /// <summary>
-        /// 각 대상 폴더에서 DeleteAfterDays 이전의 모든 로그/압축 파일을 삭제합니다.
+        /// RootFolder의 직계 하위 폴더들에서 DeleteAfterDays 이전의 파일을 삭제합니다.
         /// </summary>
         public void DeleteOldFiles()
         {
@@ -36,23 +35,23 @@ namespace LogDeleter.Services
             _activity.Info($"[삭제 시작] 기준 시각: {cutoffTime:yyyy-MM-dd HH:mm:ss} " +
                            $"(대상 확장자: {string.Join(", ", _settings.DeletionExtensions)})");
 
+            if (!Directory.Exists(_settings.RootFolder))
+            {
+                _logger.LogWarning("루트 폴더를 찾을 수 없습니다: {RootFolder}", _settings.RootFolder);
+                _activity.Warn($"[삭제] 루트 폴더 없음: {_settings.RootFolder}");
+                return;
+            }
+
             int  totalDeleted    = 0;
             long totalBytesFreed = 0;
 
-            foreach (var folder in _settings.TargetFolders)
+            var searchOption = _settings.SearchSubDirectories
+                ? SearchOption.AllDirectories
+                : SearchOption.TopDirectoryOnly;
+
+            // RootFolder의 직계 하위 폴더 목록을 대상으로 처리
+            foreach (var folder in Directory.GetDirectories(_settings.RootFolder, "*", SearchOption.TopDirectoryOnly))
             {
-                if (!Directory.Exists(folder))
-                {
-                    _logger.LogWarning("폴더를 찾을 수 없습니다: {Folder}", folder);
-                    _activity.Warn($"[삭제] 폴더 없음: {folder}");
-                    continue;
-                }
-
-                var searchOption = _settings.SearchSubDirectories
-                    ? SearchOption.AllDirectories
-                    : SearchOption.TopDirectoryOnly;
-
-                // DistinctBy 대신 GroupBy로 중복 제거 (net48 호환)
                 var oldFiles = _settings.DeletionExtensions
                     .SelectMany(ext => Directory.EnumerateFiles(folder, $"*{ext}", searchOption))
                     .GroupBy(path => path)
