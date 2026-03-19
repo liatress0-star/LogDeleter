@@ -1,3 +1,6 @@
+using System;
+using System.IO;
+using System.Linq;
 using System.Reflection;
 using log4net;
 using log4net.Appender;
@@ -7,72 +10,73 @@ using log4net.Repository.Hierarchy;
 using LogDeleter.Configuration;
 using Microsoft.Extensions.Options;
 
-namespace LogDeleter.Logging;
-
-/// <summary>
-/// log4net 기반 동작 이력 로거.
-/// ActivityLogFolder에 날짜별 롤링 파일로 기록합니다.
-/// 파일명: activity_yyyy-MM-dd.log
-/// </summary>
-public class Log4NetActivityLogger : IActivityLogger
+namespace LogDeleter.Logging
 {
-    private const string LoggerName = "LogDeleter.Activity";
-    private readonly ILog _log;
-
-    public Log4NetActivityLogger(IOptions<LogDeleterSettings> settings)
+    /// <summary>
+    /// log4net 기반 동작 이력 로거.
+    /// ActivityLogFolder에 날짜별 롤링 파일로 기록합니다.
+    /// 파일명: activity_yyyy-MM-dd.log
+    /// </summary>
+    public class Log4NetActivityLogger : IActivityLogger
     {
-        var logFolder = settings.Value.ActivityLogFolder;
+        private const string LoggerName = "LogDeleter.Activity";
+        private readonly ILog _log;
 
-        if (string.IsNullOrWhiteSpace(logFolder))
-            logFolder = @"C:\Logs\LogDeleter";
-
-        Directory.CreateDirectory(logFolder);
-
-        ConfigureLog4Net(logFolder);
-
-        _log = LogManager.GetLogger(Assembly.GetEntryAssembly()!, LoggerName);
-    }
-
-    private static void ConfigureLog4Net(string logFolder)
-    {
-        var hierarchy = (Hierarchy)LogManager.GetRepository(Assembly.GetEntryAssembly()!);
-
-        // 이미 설정된 경우 중복 구성 방지
-        var existingLogger = hierarchy.Exists(LoggerName);
-        if (existingLogger?.Appenders?.Count > 0)
-            return;
-
-        var layout = new PatternLayout(
-            "[%date{yyyy-MM-dd HH:mm:ss}] [%-5level] %message%newline");
-        layout.ActivateOptions();
-
-        // 날짜별 롤링 파일 어펜더: activity_2024-03-01.log
-        var appender = new RollingFileAppender
+        public Log4NetActivityLogger(IOptions<LogDeleterSettings> settings)
         {
-            Name          = "ActivityFileAppender",
-            File          = Path.Combine(logFolder, "activity_"),
-            AppendToFile  = true,
-            RollingStyle  = RollingFileAppender.RollingMode.Date,
-            DatePattern   = "yyyy-MM-dd'.log'",
-            StaticLogFileName = false,
-            LockingModel  = new FileAppender.MinimalLock(),
-            Layout        = layout,
-        };
-        appender.ActivateOptions();
+            var logFolder = settings.Value.ActivityLogFolder;
 
-        var logger = (Logger)hierarchy.GetLogger(LoggerName);
-        logger.Level = Level.All;
-        logger.Additivity = false; // 루트 로거로 전파 안 함
-        logger.AddAppender(appender);
+            if (string.IsNullOrWhiteSpace(logFolder))
+                logFolder = @"C:\Logs\LogDeleter";
 
-        hierarchy.Configured = true;
-    }
+            Directory.CreateDirectory(logFolder);
 
-    public void Info(string message)  => _log.Info(message);
-    public void Warn(string message)  => _log.Warn(message);
-    public void Error(string message, Exception? ex = null)
-    {
-        if (ex is not null) _log.Error(message, ex);
-        else                _log.Error(message);
+            ConfigureLog4Net(logFolder);
+
+            _log = LogManager.GetLogger(Assembly.GetEntryAssembly()!, LoggerName);
+        }
+
+        private static void ConfigureLog4Net(string logFolder)
+        {
+            var hierarchy = (Hierarchy)LogManager.GetRepository(Assembly.GetEntryAssembly()!);
+
+            // 이미 설정된 경우 중복 구성 방지
+            var existingLogger = hierarchy.Exists(LoggerName);
+            if (existingLogger?.Appenders?.Cast<IAppender>().Any() == true)
+                return;
+
+            var layout = new PatternLayout(
+                "[%date{yyyy-MM-dd HH:mm:ss}] [%-5level] %message%newline");
+            layout.ActivateOptions();
+
+            // 날짜별 롤링 파일 어펜더: activity_2024-03-01.log
+            var appender = new RollingFileAppender
+            {
+                Name              = "ActivityFileAppender",
+                File              = Path.Combine(logFolder, "activity_"),
+                AppendToFile      = true,
+                RollingStyle      = RollingFileAppender.RollingMode.Date,
+                DatePattern       = "yyyy-MM-dd'.log'",
+                StaticLogFileName = false,
+                LockingModel      = new FileAppender.MinimalLock(),
+                Layout            = layout,
+            };
+            appender.ActivateOptions();
+
+            var logger = (Logger)hierarchy.GetLogger(LoggerName);
+            logger.Level      = Level.All;
+            logger.Additivity = false; // 루트 로거로 전파 안 함
+            logger.AddAppender(appender);
+
+            hierarchy.Configured = true;
+        }
+
+        public void Info(string message) => _log.Info(message);
+        public void Warn(string message) => _log.Warn(message);
+        public void Error(string message, Exception? ex = null)
+        {
+            if (ex != null) _log.Error(message, ex);
+            else            _log.Error(message);
+        }
     }
 }
